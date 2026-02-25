@@ -1,0 +1,4 @@
+# @package _global_.wandb
+project: ConstraintsTrainingDynamics
+run_name: null      # defaults to the output directory name
+enabled: true

@@ -1,0 +1,3 @@
+# @package _global_.metrics
+log_hessian_every: 0   # compute Hessian eigenvalues every N global steps (0=off)
+hessian_k: 3

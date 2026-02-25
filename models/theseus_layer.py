@@ -220,7 +220,7 @@ class TheseusLayerNet(nn.Module):
 
         if "gauss" in self._optimizer_type:
             optimizer = th.GaussNewton(
-                objective, vectorize=False,
+                objective, vectorize=True,
                 max_iterations=self._newton_maxiter,
                 abs_err_tolerance=self._rtol ** 2,
                 rel_err_tolerance=self._rtol,
@@ -228,14 +228,14 @@ class TheseusLayerNet(nn.Module):
             )
         else:
             optimizer = th.LevenbergMarquardt(
-                objective, vectorize=False,
+                objective, vectorize=True,
                 max_iterations=self._newton_maxiter,
                 abs_err_tolerance=self._rtol ** 2,
                 rel_err_tolerance=self._rtol,
                 step_size=1.0,
             )
 
-        layer = th.TheseusLayer(optimizer, vectorize=False)
+        layer = th.TheseusLayer(optimizer, vectorize=True)
         layer.to(device=device, dtype=dtype)
 
         opt_kwargs = {
@@ -302,15 +302,10 @@ class TheseusLayerNet(nn.Module):
         input_tensors = {"y": y0, "bl": bl, "bu": bu, "eps": eps_tensor}
         opt_kwargs = {"backward_mode": backward_mode, **self.__dict__["_opt_kwargs"]}
 
-        if backward_mode == th.BackwardMode.UNROLL:
-            self.__dict__["_theseus_objective"].update(input_tensors)
-            self.__dict__["_theseus_optimizer"].optimize(**opt_kwargs)
-            y_result = self.__dict__["_theseus_objective"].optim_vars["y"].tensor
-        else:
-            result, _ = self.__dict__["_theseus_layer"].forward(
-                input_tensors=input_tensors, optimizer_kwargs=opt_kwargs,
-            )
-            y_result = result["y"]
+        result, _ = self.__dict__["_theseus_layer"].forward(
+            input_tensors=input_tensors, optimizer_kwargs=opt_kwargs,
+        )
+        y_result = result["y"]
 
         if self._trust_region:
             delta = torch.clamp(y_result - y0, -1, 1)

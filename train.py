@@ -7,28 +7,27 @@ dataset, logging all training dynamics metrics for comparison.
 
 Usage
 -----
-    uv run python experiments/train.py                           # defaults
-    uv run python experiments/train.py --epochs 200 --lr 1e-3   # override
-    uv run python experiments/train.py --models soft             # subset
+    uv run train.py                                  # defaults
+    uv run train.py training.epochs=200 training.lr=1e-3   # override
+    uv run train.py models=[soft]                    # subset
+    uv run train.py wandb.enabled=false              # disable W&B
 
-Results are saved to  experiments/results/<timestamp>/  as JSON + plots.
+Config files live in conf/. Results are saved to results/<timestamp>/.
 """
 
-import argparse
 import json
-import os
-import sys
 import time
 from pathlib import Path
-from datetime import datetime
 
+import hydra
 import torch
 import torch.nn as nn
-from torch.utils.data import TensorDataset, DataLoader
+import wandb
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
+from torch.utils.data import DataLoader, TensorDataset
 
 torch.set_default_dtype(torch.float64)
-
-SCRIPT_DIR = Path(__file__).resolve().parent
 
 from dataset.qcqp_problem import QCQPProblem
 from models import SoftPenaltyNet, TheseusLayerNet
@@ -93,6 +92,7 @@ def train_one_model(
     problem: QCQPProblem,
     cfg: dict,
     results_dir: Path,
+    use_wandb: bool = False,
 ) -> list[dict]:
     """
     Train *model* and return a list of per-epoch metric dicts.
@@ -189,6 +189,13 @@ def train_one_model(
         record.update(train_metrics)
         history.append(record)
 
+        # --- Log to wandb ---
+        if use_wandb:
+            wandb.log(
+                {k: v for k, v in record.items()},
+                step=global_step,
+            )
+
         # --- Print progress ---
         if epoch % max(1, epochs // 20) == 0 or epoch == 1:
             print(
@@ -211,96 +218,72 @@ def train_one_model(
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(description="QCQP comparison experiment")
+@hydra.main(config_path="conf", config_name="config", version_base=None)
+def main(cfg: DictConfig) -> None:
+    """Entry point – config is fully managed by Hydra (see conf/)."""
 
-    # Dataset
-    parser.add_argument("--dataset", type=str,
-                        default="dataset/data/qcqp_var50_ineq20_eq20_N2000_seed2025.pkl",
-                        help="Path to saved QCQPProblem pickle")
-
-    # Models to train
-    parser.add_argument("--models", nargs="+", default=["soft", "theseus"],
-                        choices=["soft", "theseus"],
-                        help="Which models to train")
-
-    # Training
-    parser.add_argument("--epochs", type=int, default=150)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--penalty_weight", type=float, default=10.0,
-                        help="λ for soft-penalty loss")
-
-    # Model architecture
-    parser.add_argument("--hidden_dim", type=int, default=200)
-    parser.add_argument("--n_hidden", type=int, default=3)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--use_batchnorm", action="store_true", default=True)
-
-    # Metrics
-    parser.add_argument("--log_hessian_every", type=int, default=0,
-                        help="Compute Hessian eigenvalues every N global steps (0=off)")
-    parser.add_argument("--hessian_k", type=int, default=3)
-
-    # Theseus
-    parser.add_argument("--theseus_maxiter", type=int, default=30)
-
-    # Output
-    parser.add_argument("--output_dir", type=str, default=None)
-    parser.add_argument("--seed", type=int, default=42)
-
-    args = parser.parse_args()
-
-    # --- Seed ---
-    torch.manual_seed(args.seed)
-
-    # --- Output directory ---
-    if args.output_dir is None:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = SCRIPT_DIR / "results" / ts
-    else:
-        out_dir = Path(args.output_dir)
+    # --- Output directory (set by hydra.run.dir in conf/config.yaml) ---
+    out_dir = Path(HydraConfig.get().runtime.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Results will be saved to: {out_dir}")
 
+    # --- Seed ---
+    torch.manual_seed(cfg.seed)
+
     # --- Load dataset ---
-    print(f"\nLoading dataset: {args.dataset}")
-    problem = QCQPProblem.load(args.dataset)
+    print(f"\nLoading dataset: {cfg.dataset.path}")
+    problem = QCQPProblem.load(cfg.dataset.path)
     print(f"  {problem}")
     print(f"  Train: {len(problem.trainX)},  Valid: {len(problem.validX)},  "
           f"Test: {len(problem.testX)}")
 
-    # --- Config dict ---
-    cfg = {
-        "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "lr": args.lr,
-        "penalty_weight": args.penalty_weight,
-        "hidden_dim": args.hidden_dim,
-        "n_hidden": args.n_hidden,
-        "dropout": args.dropout,
-        "use_batchnorm": args.use_batchnorm,
-        "log_hessian_every": args.log_hessian_every,
-        "hessian_k": args.hessian_k,
-        "theseus_maxiter": args.theseus_maxiter,
-        "seed": args.seed,
+    # Build flat cfg for helper functions and backward-compat JSON serialisation
+    train_cfg: dict = {
+        "epochs":            cfg.training.epochs,
+        "batch_size":        cfg.training.batch_size,
+        "lr":                cfg.training.lr,
+        "penalty_weight":    cfg.training.penalty_weight,
+        "hidden_dim":        cfg.model.hidden_dim,
+        "n_hidden":          cfg.model.n_hidden,
+        "dropout":           cfg.model.dropout,
+        "use_batchnorm":     cfg.model.use_batchnorm,
+        "log_hessian_every": cfg.metrics.log_hessian_every,
+        "hessian_k":         cfg.metrics.hessian_k,
+        "theseus_maxiter":   cfg.model.theseus_maxiter,
+        "seed":              cfg.seed,
     }
 
-    # Save config
+    # Save resolved config as JSON (for plot_comparison.py and post-hoc inspection)
     with open(out_dir / "config.json", "w") as f:
-        json.dump(cfg, f, indent=2)
+        json.dump(train_cfg, f, indent=2)
 
     # --- Train each model ---
+    experiment_name = cfg.wandb.run_name or out_dir.name
     all_histories: dict[str, list[dict]] = {}
 
-    for model_name in args.models:
-        torch.manual_seed(args.seed)  # same init for fair comparison
+    for model_name in cfg.models:
+        torch.manual_seed(cfg.seed)  # same init for fair comparison
 
-        model = build_model(model_name, problem, cfg)
+        model = build_model(model_name, problem, train_cfg)
         t0 = time.time()
 
+        # Initialise a per-model W&B run if enabled
+        if cfg.wandb.enabled:
+            wandb.init(
+                project=cfg.wandb.project,
+                name=f"{experiment_name}_{model_name}",
+                group=experiment_name,
+                config={**train_cfg, "model_name": model_name},
+                dir=str(out_dir),
+                finish_previous=True,
+            )
+            print(f"W&B run ({model_name}): {wandb.run.url}")
+
         try:
-            history = train_one_model(model_name, model, problem, cfg, out_dir)
+            history = train_one_model(
+                model_name, model, problem, train_cfg, out_dir,
+                use_wandb=cfg.wandb.enabled,
+            )
             elapsed = time.time() - t0
             print(f"\n  [{model_name}] Done in {elapsed:.1f}s")
             all_histories[model_name] = history
@@ -308,7 +291,12 @@ def main():
             print(f"\n  [{model_name}] FAILED: {e}")
             import traceback
             traceback.print_exc()
+            if cfg.wandb.enabled:
+                wandb.finish(exit_code=1)
             continue
+
+        if cfg.wandb.enabled:
+            wandb.finish()
 
     # --- Save all histories ---
     hist_path = out_dir / "histories.json"
@@ -325,8 +313,8 @@ def main():
     test_results = {}
 
     for model_name in all_histories:
-        torch.manual_seed(args.seed)
-        model = build_model(model_name, problem, cfg)
+        torch.manual_seed(cfg.seed)
+        model = build_model(model_name, problem, train_cfg)
         ckpt = out_dir / f"{model_name}_checkpoint.pt"
         model.load_state_dict(torch.load(ckpt, weights_only=True))
         model.eval()
@@ -358,7 +346,7 @@ def main():
     print(f"\nGenerating comparison plots...")
     try:
         from plot_comparison import plot_all
-        plot_all(all_histories, out_dir, cfg)
+        plot_all(all_histories, out_dir, train_cfg)
         print(f"Plots saved to {out_dir}")
     except Exception as e:
         print(f"Plotting failed: {e}  (run plot_comparison.py separately)")
@@ -367,4 +355,6 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+
     main()

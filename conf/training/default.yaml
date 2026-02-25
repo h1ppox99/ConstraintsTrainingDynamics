@@ -1,0 +1,5 @@
+# @package _global_.training
+epochs: 150
+batch_size: 64
+lr: 1e-3
+penalty_weight: 10.0  # λ for soft-penalty loss

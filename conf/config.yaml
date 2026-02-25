@@ -1,0 +1,20 @@
+defaults:
+  - dataset: default
+  - training: default
+  - model: default
+  - metrics: default
+  - wandb: default
+  - _self_
+
+# Models to train (subset or all)
+models:
+  - soft
+  - theseus
+
+seed: 42
+
+hydra:
+  run:
+    dir: results/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

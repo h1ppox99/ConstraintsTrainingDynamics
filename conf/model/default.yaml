@@ -1,0 +1,6 @@
+# @package _global_.model
+hidden_dim: 200
+n_hidden: 3
+dropout: 0.1
+use_batchnorm: true
+theseus_maxiter: 30

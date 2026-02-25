@@ -16,6 +16,22 @@ the following quantities during training:
 
 All functions return plain Python dicts ready for wandb / CSV / JSON logging.
 
+Metrics computed
+----------------
+1.  loss                  – scalar training loss
+2.  constraint_violations – per-type (ineq / eq) violation statistics  (improved)
+3.  n_violated            – number of violated constraints
+4.  grad_cosine_sim       – cosine similarity + optional PCGrad projection
+                            (projects obj gradient to remove conflict with the
+                             constraint gradient when similarity < 0)
+5.  grad_snr              – global SNR + per-layer SNR + min-layer bottleneck
+6.  hessian_top_eig       – top-k eigenvalues + per-eigenvalue residual/
+                            convergence flag (stochastic power iteration)
+7.  jacobian_eff_rank     – effective rank of the constraint Jacobian
+8.  feature_jacobian       – effective rank of the feature Jacobian ∂y/∂x
+                            (detects representation collapse independent of
+                             constraint satisfaction)
+
 Example
 -------
     tracker = MetricsTracker(problem, log_hessian_every=50)
@@ -115,10 +131,12 @@ def compute_grad_cosine_similarity(
     X: torch.Tensor,
     Y: torch.Tensor,
     penalty_weight: float = 1.0,
+    apply_pcgrad: bool = False,
 ) -> dict:
     """
     Cosine similarity between the gradient of the objective loss and the
-    gradient of the constraint-violation penalty.
+    gradient of the constraint-violation penalty, with optional PCGrad
+    correction.
 
     cos(∇_θ L_obj, ∇_θ L_constr)  ∈ [-1, 1]
 
@@ -126,42 +144,87 @@ def compute_grad_cosine_similarity(
     direction;  **-1** means they are in conflict;  **0** signals
     orthogonality.
 
+    PCGrad (``apply_pcgrad=True``)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    When ``cos < 0`` the gradient of the objective is projected onto the
+    normal plane of the constraint gradient so that the two tasks no longer
+    conflict.  The model's ``.grad`` tensors are overwritten in-place with
+    the combined PCGrad vector  ``g_obj_proj + g_viol``.  Call this function
+    **after** ``loss.backward()`` and **before** ``optimizer.step()``.
+
+        g_obj_proj = g_obj − (g_obj · g_viol / ‖g_viol‖²) · g_viol
+
     Parameters
     ----------
     model          : the network whose parameters carry gradients
     problem        : QCQPProblem
     X, Y           : current mini-batch  (Y = model output, must retain grad graph)
-    penalty_weight : λ used in the penalty loss (for scaling, but cos is
-                     scale-invariant so this only matters for numerical stability)
+    penalty_weight : λ used in the penalty loss (scale-invariant for cosine)
+    apply_pcgrad   : if True and cos < 0, overwrite model gradients with the
+                     PCGrad-projected combined gradient
 
     Returns
     -------
-    dict with ``grad_cosine_sim``
+    dict with ``grad_cosine_sim``, ``grad_obj_norm``, ``grad_viol_norm``,
+    and ``pcgrad_applied`` (bool flag, only present when apply_pcgrad=True)
     """
+    params = list(model.parameters())
+    device = params[0].device if params else torch.device("cpu")
+    dtype  = params[0].dtype  if params else torch.float64
+
     # --- Gradient of objective term ---
     obj_loss = problem.get_objective_loss(Y, X).mean()
     obj_grads = torch.autograd.grad(
-        obj_loss, model.parameters(), retain_graph=True, allow_unused=True,
+        obj_loss, params, retain_graph=True, allow_unused=True,
     )
-    g_obj = torch.cat([g.flatten() for g in obj_grads if g is not None])
+    # Use zeros for parameters with no gradient so flat vectors stay aligned
+    g_obj = torch.cat([
+        g.flatten() if g is not None else torch.zeros(p.numel(), device=device, dtype=dtype)
+        for g, p in zip(obj_grads, params)
+    ])
 
     # --- Gradient of constraint-violation term ---
     resid = problem.get_resid(X, Y)
     viol_loss = (resid ** 2).sum(dim=1).mean()
     viol_grads = torch.autograd.grad(
-        viol_loss, model.parameters(), retain_graph=True, allow_unused=True,
+        viol_loss, params, retain_graph=True, allow_unused=True,
     )
-    g_viol = torch.cat([g.flatten() for g in viol_grads if g is not None])
+    g_viol = torch.cat([
+        g.flatten() if g is not None else torch.zeros(p.numel(), device=device, dtype=dtype)
+        for g, p in zip(viol_grads, params)
+    ])
 
     cos = torch.nn.functional.cosine_similarity(
         g_obj.unsqueeze(0), g_viol.unsqueeze(0),
     ).item()
 
-    return {
+    out = {
         "grad_cosine_sim": cos,
         "grad_obj_norm":   g_obj.norm().item(),
         "grad_viol_norm":  g_viol.norm().item(),
     }
+
+    # --- Optional PCGrad correction ---
+    if apply_pcgrad:
+        pcgrad_applied = cos < 0
+        if pcgrad_applied:
+            # Project g_obj onto the normal plane of g_viol
+            dot = g_obj.dot(g_viol)
+            g_viol_sq = g_viol.dot(g_viol).clamp(min=1e-12)
+            g_obj_proj = g_obj - (dot / g_viol_sq) * g_viol
+            g_combined = g_obj_proj + g_viol
+
+            # Write back into model .grad tensors (in-place)
+            offset = 0
+            for p in params:
+                n = p.numel()
+                if p.grad is not None:
+                    p.grad.copy_(g_combined[offset : offset + n].view_as(p))
+                offset += n
+
+        out["pcgrad_applied"] = int(pcgrad_applied)
+
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -201,12 +264,26 @@ def compute_grad_snr(model: nn.Module) -> dict:
         layer_snrs[f"grad_snr/{name}"] = snr
 
     if len(all_grads) == 0:
-        return {"grad_snr_global": 0.0}
+        return {"grad_snr_global": 0.0, "grad_snr_min": 0.0}
 
     g_all = torch.cat(all_grads)
     global_snr = (g_all.mean().abs() / (g_all.std() + 1e-12)).item()
 
-    out = {"grad_snr_global": global_snr}
+    # Bottleneck detection: the layer with the lowest SNR corrupts all
+    # upstream gradient signals — track it explicitly regardless of whether
+    # per-layer logging is enabled.
+    if layer_snrs:
+        min_layer_name = min(layer_snrs, key=layer_snrs.get)
+        grad_snr_min   = layer_snrs[min_layer_name]
+    else:
+        min_layer_name = ""
+        grad_snr_min   = global_snr
+
+    out = {
+        "grad_snr_global":    global_snr,
+        "grad_snr_min":       grad_snr_min,
+        "grad_snr_min_layer": min_layer_name,   # informational; may be filtered by some loggers
+    }
     out.update(layer_snrs)
     return out
 
@@ -272,7 +349,15 @@ def compute_hessian_top_eigenvalues(
 
     Returns
     -------
-    dict with ``hessian_eig_1 .. hessian_eig_k`` and ``hessian_eig_max``
+    dict with
+    - ``hessian_eig_1 .. hessian_eig_k``  – estimated eigenvalues
+    - ``hessian_eig_max``                  – largest of the k eigenvalues
+    - ``hessian_residual_1 .. _k``         – ‖Hv − λv‖ for each eigenpair;
+      a high residual indicates the estimate is unreliable (e.g. two
+      eigenvalues are nearly degenerate and the iteration oscillated)
+    - ``hessian_converged``                – 1 if *all* residuals are below
+      ``tol * max(|λ|, 1)``; 0 otherwise.  Do not use ``hessian_eig_max``
+      for learning-rate tuning when this flag is 0.
     """
     params = [p for p in model.parameters() if p.requires_grad]
     d = sum(p.numel() for p in params)
@@ -280,6 +365,7 @@ def compute_hessian_top_eigenvalues(
     dtype = params[0].dtype
 
     eigenvalues: list[float] = []
+    residuals:   list[float] = []
     eigenvectors: list[torch.Tensor] = []
 
     for i in range(k):
@@ -303,11 +389,26 @@ def compute_hessian_top_eigenvalues(
                 break
             lam_prev = lam
 
+        # Deflation stability check: compute the true residual ‖Hv − λv‖.
+        # A large residual means two eigenvalues are nearly degenerate and the
+        # iteration oscillated — the reported λ should not be trusted for
+        # learning-rate tuning.  We pay one extra HVP call per eigenvalue.
+        with torch.no_grad():
+            Hv_raw = _hvp(loss_fn, params, v.detach())
+        residual = (Hv_raw - lam * v).norm().item()
+
         eigenvalues.append(lam)
+        residuals.append(residual)
         eigenvectors.append(v.detach())
 
+    converged = all(
+        residuals[i] < tol * max(abs(eigenvalues[i]), 1.0) for i in range(k)
+    )
+
     out = {f"hessian_eig_{i+1}": eigenvalues[i] for i in range(k)}
-    out["hessian_eig_max"] = max(eigenvalues)
+    out.update({f"hessian_residual_{i+1}": residuals[i] for i in range(k)})
+    out["hessian_eig_max"]  = max(eigenvalues)
+    out["hessian_converged"] = int(converged)
     return out
 
 
@@ -363,6 +464,75 @@ def compute_jacobian_effective_rank(problem, Y: torch.Tensor) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  8.  Effective rank of the feature Jacobian  ∂y/∂x
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compute_feature_jacobian_effective_rank(
+    model: nn.Module,
+    X: torch.Tensor,
+) -> dict:
+    """
+    Effective rank of the feature Jacobian  J_x = ∂y/∂x  ∈ ℝ^{n×e}.
+
+    Complements :func:`compute_jacobian_effective_rank` which measures
+    constraint independence.  **If the constraint Jacobian rank is high but
+    the feature Jacobian rank is low**, the model is attempting to satisfy
+    constraints in a space where it has insufficient expressive power.
+
+    The Jacobian is assembled column-by-column via back-prop  (one
+    ``autograd.grad`` call per output dimension *n*).  For large *n* this
+    can be expensive; consider calling it periodically rather than every step.
+
+    Parameters
+    ----------
+    model : nn.Module  (called internally with ``X``) 
+    X     : (b, e)  input batch
+
+    Returns
+    -------
+    dict with
+    - ``feature_jacobian_eff_rank``   – batch-averaged effective rank
+    - ``feature_jacobian_rank_ratio`` – eff_rank / min(n, e)
+    - ``feature_jacobian_top_sv``     – mean largest singular value
+    - ``feature_jacobian_min_sv``     – mean smallest singular value
+    - ``feature_jacobian_condition``  – mean condition number  σ_max / σ_min
+    """
+    X_ = X.detach().requires_grad_(True)
+    with torch.enable_grad():
+        Y_ = model(X_)   # (b, n)
+        b, n = Y_.shape
+
+    # Build J ∈ ℝ^{b × n × e} column-by-column
+    J_rows: list[torch.Tensor] = []
+    for j in range(n):
+        g = torch.autograd.grad(
+            Y_[:, j].sum(), X_,
+            retain_graph=(j < n - 1),
+            create_graph=False,
+        )[0]           # (b, e)
+        J_rows.append(g)
+
+    J = torch.stack(J_rows, dim=1)   # (b, n, e)
+    S = torch.linalg.svdvals(J)      # (b, min(n, e))
+
+    S_sum  = S.sum(dim=1, keepdim=True).clamp(min=1e-12)
+    S_norm = S / S_sum
+    log_S  = torch.log(S_norm.clamp(min=1e-12))
+    entropy  = -(S_norm * log_S).sum(dim=1)   # (b,)
+    eff_rank = torch.exp(entropy)              # (b,)
+
+    max_rank = float(S.shape[1])
+
+    return {
+        "feature_jacobian_eff_rank":   eff_rank.mean().item(),
+        "feature_jacobian_rank_ratio": (eff_rank.mean() / max_rank).item(),
+        "feature_jacobian_top_sv":     S[:, 0].mean().item(),
+        "feature_jacobian_min_sv":     S[:, -1].mean().item(),
+        "feature_jacobian_condition":  (S[:, 0] / S[:, -1].clamp(min=1e-12)).mean().item(),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  MetricsTracker  – convenient wrapper for use in a training loop
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -401,11 +571,17 @@ class MetricsTracker:
 
     Parameters
     ----------
-    problem            : QCQPProblem instance
-    log_hessian_every  : compute Hessian eigenvalues every N steps (0 = never)
-    hessian_k          : number of top eigenvalues to track
-    log_layer_snr      : include per-layer gradient SNR  (verbose)
-    violation_eps      : threshold for counting a constraint as violated
+    problem              : QCQPProblem instance
+    log_hessian_every    : compute Hessian eigenvalues every N steps (0 = never)
+    hessian_k            : number of top eigenvalues to track
+    log_layer_snr        : include per-layer gradient SNR  (verbose)
+    violation_eps        : threshold for counting a constraint as violated
+    apply_pcgrad         : when True, apply PCGrad correction to model gradients
+                           whenever grad_cosine_sim < 0  (modifies .grad in place;
+                           call before optimizer.step())
+    log_feature_jacobian : compute the feature Jacobian ∂y/∂x every N steps
+                           (0 = never).  Useful for detecting representation
+                           collapse independent of constraint satisfaction.
     """
 
     def __init__(
@@ -415,12 +591,16 @@ class MetricsTracker:
         hessian_k: int = 3,
         log_layer_snr: bool = False,
         violation_eps: float = 1e-6,
+        apply_pcgrad: bool = False,
+        log_feature_jacobian: int = 0,
     ):
         self.problem = problem
         self.log_hessian_every = log_hessian_every
         self.hessian_k = hessian_k
         self.log_layer_snr = log_layer_snr
         self.violation_eps = violation_eps
+        self.apply_pcgrad = apply_pcgrad
+        self.log_feature_jacobian = log_feature_jacobian
 
     # ------------------------------------------------------------------
 
@@ -469,13 +649,14 @@ class MetricsTracker:
             compute_constraint_violations(problem, X, Y.detach(), eps=self.violation_eps)
         )
 
-        # 4. Gradient cosine similarity
+        # 4. Gradient cosine similarity (+ optional PCGrad correction)
         if Y.requires_grad or (Y.grad_fn is not None):
             try:
                 metrics.update(
                     compute_grad_cosine_similarity(
                         model, problem, X, Y,
                         penalty_weight=penalty_weight,
+                        apply_pcgrad=self.apply_pcgrad,
                     )
                 )
             except RuntimeError:
@@ -483,13 +664,21 @@ class MetricsTracker:
                 pass
 
         # 5. Gradient SNR
+        #    Always surface the global SNR and the bottleneck-layer min SNR.
+        #    Per-layer detail is opt-in via log_layer_snr.
         snr = compute_grad_snr(model)
+        metrics["grad_snr_global"]    = snr.get("grad_snr_global", 0.0)
+        metrics["grad_snr_min"]       = snr.get("grad_snr_min", 0.0)
+        metrics["grad_snr_min_layer"] = snr.get("grad_snr_min_layer", "")
         if self.log_layer_snr:
-            metrics.update(snr)
-        else:
-            metrics["grad_snr_global"] = snr.get("grad_snr_global", 0.0)
+            metrics.update({
+                k: v for k, v in snr.items()
+                if k.startswith("grad_snr/")
+            })
 
-        # 6. Hessian top eigenvalues (periodic)
+        # 6. Hessian top eigenvalues + residuals (periodic)
+        #    hessian_converged == 0 means the residual is high and λ_max
+        #    should not be used for learning-rate tuning.
         if self.log_hessian_every > 0 and loss_fn is not None and step % self.log_hessian_every == 0:
             try:
                 metrics.update(
@@ -502,5 +691,16 @@ class MetricsTracker:
 
         # 7. Effective rank of the constraint Jacobian
         metrics.update(compute_jacobian_effective_rank(problem, Y.detach()))
+
+        # 8. Effective rank of the feature Jacobian ∂y/∂x  (periodic)
+        #    Cross-reference with constraint Jacobian rank: a high constraint
+        #    rank but low feature rank means the model lacks expressive power.
+        if self.log_feature_jacobian > 0 and step % self.log_feature_jacobian == 0:
+            try:
+                metrics.update(
+                    compute_feature_jacobian_effective_rank(model, X)
+                )
+            except RuntimeError:
+                pass
 
         return metrics

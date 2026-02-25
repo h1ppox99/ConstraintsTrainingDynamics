@@ -25,4 +25,5 @@ Thumbs.db
 # Generated data and results
 dataset/data/
 results/
+multirun/
 *.pkl
