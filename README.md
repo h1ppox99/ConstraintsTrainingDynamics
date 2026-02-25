@@ -47,33 +47,7 @@ encouraged through the loss, but never guaranteed.
 
 ---
 
-### 2. CVXPy Layers (differentiable convex solver)
-
-**Core idea.** Replace the unconstrained MLP output with a differentiable
-convex optimization solve.  A small "prediction" network produces the
-parameters of an inner QP/QCQP that is solved exactly; the solve itself is
-differentiated via implicit differentiation of the KKT conditions.
-
-**Architecture.** Backbone MLP → *differentiable QCQP layer* (via
-`cvxpylayers`) → feasible output $y$.  The output is **always feasible** by
-construction.
-
-**Differentiability.** Exact gradients through the solve via the implicit
-function theorem applied to the KKT system. 
-
-**Key dynamics questions.**
-- How do implicit gradients compare in magnitude and direction to explicit
-  sub-gradient estimates?
-- Does the hard-feasibility guarantee come at the cost of slower convergence
-  or gradient vanishing near the constraint boundary?
-- How does the solve time per backward pass scale with problem size?
-
-**References.** Agrawal et al., "Differentiable Convex Optimization Layers"
-(NeurIPS 2019); `cvxpylayers` library.
-
----
-
-### 3. Theseus Layers (differentiable nonlinear optimizer)
+### 2. Theseus Layers (differentiable nonlinear optimizer)
 
 **Core idea.** Embed a differentiable nonlinear least-squares solver
 (Levenberg-Marquardt or Gauss-Newton) as a learnable layer.  The constraint
@@ -103,26 +77,5 @@ $y$.  The output satisfies constraints up to solver tolerance.
 
 **References.** Pineda et al., "Theseus: A Library for Differentiable
 Nonlinear Optimization" (NeurIPS 2022); `theseus-ai` library.
-
----
-
-**Quick start – generate a dataset:**
-
-```bash
-cd experiments/dataset
-
-# Default: 100 vars, 50 ineq, 50 eq, 10 000 instances, solve with CVXPY
-python generate_dataset.py
-
-# Smaller problem for quick iteration
-python generate_dataset.py --num_var 50 --num_ineq 20 --num_eq 20 --n_examples 2000
-
-# Skip CVXPY solve (faster, no optimality-gap metric)
-python generate_dataset.py --no_opt_solve
-
-# Load a saved dataset from Python
-from qcqp_problem import QCQPProblem
-data = QCQPProblem.load("qcqp_var100_ineq50_eq50_N10000_seed2025.pkl")
-```
 
 

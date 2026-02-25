@@ -27,12 +27,8 @@ torch.set_default_dtype(torch.float64)
 
 from typing import Optional, Tuple, List
 
-try:
-    import theseus as th
-    from theseus.core import CostFunction, Objective, Variable
-    THESEUS_AVAILABLE = True
-except ImportError:
-    THESEUS_AVAILABLE = False
+import theseus as th
+from theseus.core import CostFunction, Objective, Variable
 
 from .backbone import MLPBackbone
 
@@ -154,11 +150,6 @@ class TheseusLayerNet(nn.Module):
         optimizer_type: str = "levenberg_marquardt",
         trust_region: bool = False,
     ):
-        if not THESEUS_AVAILABLE:
-            raise ImportError(
-                "theseus-ai is required for TheseusLayerNet.  "
-                "Install with:  pip install theseus-ai"
-            )
         super().__init__()
 
         self._problem = problem

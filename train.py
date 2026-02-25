@@ -2,14 +2,14 @@
 """
 Comparative training experiment for the three constraint-handling techniques.
 
-Trains SoftPenaltyNet, CvxpyLayerNet, and TheseusLayerNet on the same QCQP
+Trains SoftPenaltyNet and TheseusLayerNet on the same QCQP
 dataset, logging all training dynamics metrics for comparison.
 
 Usage
 -----
     uv run python experiments/train.py                           # defaults
     uv run python experiments/train.py --epochs 200 --lr 1e-3   # override
-    uv run python experiments/train.py --models soft cvxpy       # subset
+    uv run python experiments/train.py --models soft             # subset
 
 Results are saved to  experiments/results/<timestamp>/  as JSON + plots.
 """
@@ -28,16 +28,10 @@ from torch.utils.data import TensorDataset, DataLoader
 
 torch.set_default_dtype(torch.float64)
 
-# ---------------------------------------------------------------------------
-# Path setup
-# ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
 from dataset.qcqp_problem import QCQPProblem
-from models.soft_penalty import SoftPenaltyNet
-from models.cvxpy_layer import CvxpyLayerNet
-from models.theseus_layer import TheseusLayerNet
+from models import SoftPenaltyNet, TheseusLayerNet
 from training_dynamics.metrics import MetricsTracker
 
 
@@ -65,8 +59,6 @@ def build_model(name: str, problem: QCQPProblem, cfg: dict) -> nn.Module:
             output_dim=problem.ydim,
             **common,
         )
-    elif name == "cvxpy":
-        return CvxpyLayerNet(problem, **common)
     elif name == "theseus":
         return TheseusLayerNet(
             problem, **common,
@@ -87,7 +79,7 @@ def compute_loss(
     if model_name == "soft":
         return problem.get_soft_penalty_loss(Y, X, penalty_weight).mean()
     else:
-        # CVXPy / Theseus: feasibility built-in → pure objective loss
+        # Theseus: feasibility built-in → pure objective loss
         return problem.get_objective_loss(Y, X).mean()
 
 
@@ -224,12 +216,12 @@ def main():
 
     # Dataset
     parser.add_argument("--dataset", type=str,
-                        default="experiments/dataset/data/qcqp_var50_ineq20_eq20_N2000_seed2025.pkl",
+                        default="dataset/data/qcqp_var50_ineq20_eq20_N2000_seed2025.pkl",
                         help="Path to saved QCQPProblem pickle")
 
     # Models to train
-    parser.add_argument("--models", nargs="+", default=["soft", "cvxpy", "theseus"],
-                        choices=["soft", "cvxpy", "theseus"],
+    parser.add_argument("--models", nargs="+", default=["soft", "theseus"],
+                        choices=["soft", "theseus"],
                         help="Which models to train")
 
     # Training

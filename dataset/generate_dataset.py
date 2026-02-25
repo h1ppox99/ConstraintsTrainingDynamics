@@ -32,12 +32,9 @@ The script saves one file:
 
 import argparse
 import os
-import sys
 import numpy as np
 
-# Allow running this file directly from any working directory
-sys.path.insert(0, os.path.dirname(__file__))
-from qcqp_problem import QCQPProblem
+from dataset.qcqp_problem import QCQPProblem
 
 
 # ---------------------------------------------------------------------------

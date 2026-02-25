@@ -32,7 +32,6 @@ import numpy as np
 
 MODEL_STYLES = {
     "soft":    {"color": "#e74c3c", "label": "Soft Penalty",    "ls": "-"},
-    "cvxpy":   {"color": "#2ecc71", "label": "CVXPy Layer",     "ls": "-"},
     "theseus": {"color": "#3498db", "label": "Theseus Layer",   "ls": "-"},
 }
 
