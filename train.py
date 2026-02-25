@@ -258,7 +258,19 @@ def main(cfg: DictConfig) -> None:
         json.dump(train_cfg, f, indent=2)
 
     # --- Train each model ---
-    experiment_name = cfg.wandb.run_name or out_dir.name
+    if cfg.wandb.run_name:
+        experiment_name = cfg.wandb.run_name
+    else:
+        # Build a human-readable name from the key hyperparameters so that
+        # W&B runs are immediately identifiable without opening each one.
+        # Format: ep{epochs}_lr{lr}_h{hidden_dim}x{n_hidden}_pw{penalty_weight}
+        lr_str = f"{cfg.training.lr:.0e}".replace("e-0", "e-").replace("e+0", "e")
+        experiment_name = (
+            f"ep{cfg.training.epochs}"
+            f"_lr{lr_str}"
+            f"_h{cfg.model.hidden_dim}x{cfg.model.n_hidden}"
+            f"_pw{cfg.training.penalty_weight}"
+        )
     all_histories: dict[str, list[dict]] = {}
 
     for model_name in cfg.models:
@@ -269,13 +281,21 @@ def main(cfg: DictConfig) -> None:
 
         # Initialise a per-model W&B run if enabled
         if cfg.wandb.enabled:
+            if wandb.run is not None:
+                wandb.finish()
             wandb.init(
                 project=cfg.wandb.project,
                 name=f"{experiment_name}_{model_name}",
                 group=experiment_name,
+                tags=[
+                    model_name,
+                    f"ep{cfg.training.epochs}",
+                    f"lr{cfg.training.lr}",
+                    f"h{cfg.model.hidden_dim}x{cfg.model.n_hidden}",
+                    f"pw{cfg.training.penalty_weight}",
+                ],
                 config={**train_cfg, "model_name": model_name},
                 dir=str(out_dir),
-                finish_previous=True,
             )
             print(f"W&B run ({model_name}): {wandb.run.url}")
 
