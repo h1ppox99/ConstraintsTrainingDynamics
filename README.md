@@ -78,4 +78,3 @@ $y$.  The output satisfies constraints up to solver tolerance.
 **References.** Pineda et al., "Theseus: A Library for Differentiable
 Nonlinear Optimization" (NeurIPS 2022); `theseus-ai` library.
 
-

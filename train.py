@@ -38,9 +38,14 @@ from training_dynamics.metrics import MetricsTracker
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_loader(X: torch.Tensor, batch_size: int, shuffle: bool = True):
-    """Wrap X in a DataLoader (labels come from the problem, not the dataset)."""
-    ds = TensorDataset(X)
+def make_loader(
+    X: torch.Tensor,
+    opt_vals: torch.Tensor,
+    batch_size: int,
+    shuffle: bool = True,
+):
+    """Wrap X and opt_vals in a DataLoader (labels come from the problem, not the dataset)."""
+    ds = TensorDataset(X, opt_vals)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
 
 
@@ -73,13 +78,14 @@ def compute_loss(
     Y: torch.Tensor,
     X: torch.Tensor,
     penalty_weight: float,
+    opt_vals: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute the appropriate scalar loss for a given model type."""
     if model_name == "soft":
-        return problem.get_soft_penalty_loss(Y, X, penalty_weight).mean()
+        return problem.get_soft_penalty_loss(Y, X, penalty_weight, opt_vals).mean()
     else:
-        # Theseus: feasibility built-in → pure objective loss
-        return problem.get_objective_loss(Y, X).mean()
+        # Theseus: feasibility built-in → optimality gap
+        return problem.get_objective_loss(Y, X, opt_vals).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +119,7 @@ def train_one_model(
         log_layer_snr=False,
     )
 
-    train_loader = make_loader(problem.trainX, batch_size)
+    train_loader = make_loader(problem.trainX, problem.trainOptvals, batch_size)
     valid_X = problem.validX
 
     history: list[dict] = []
@@ -130,11 +136,11 @@ def train_one_model(
         epoch_loss = 0.0
         n_batches = 0
 
-        for (X_batch,) in train_loader:
+        for (X_batch, optval_batch) in train_loader:
             optimizer.zero_grad()
 
             Y_pred = model(X_batch)
-            loss = compute_loss(model_name, problem, Y_pred, X_batch, penalty_weight)
+            loss = compute_loss(model_name, problem, Y_pred, X_batch, penalty_weight, optval_batch)
 
             loss.backward(retain_graph=True)
 
@@ -145,7 +151,7 @@ def train_one_model(
             if is_last_batch:
                 def loss_fn():
                     return compute_loss(
-                        model_name, problem, model(X_batch), X_batch, penalty_weight,
+                        model_name, problem, model(X_batch), X_batch, penalty_weight, optval_batch,
                     )
 
                 train_metrics = tracker.step(
@@ -172,7 +178,7 @@ def train_one_model(
         model.eval()
         with torch.no_grad():
             Y_val = model(valid_X)
-            val_obj = problem.get_objective_loss(Y_val, valid_X).mean().item()
+            val_obj = problem.get_objective_loss(Y_val, valid_X, problem.validOptvals).mean().item()
             val_ineq = problem.get_ineq_res(valid_X, Y_val).mean().item()
             val_eq = problem.get_eq_res(valid_X, Y_val).mean().item()
 
@@ -341,7 +347,7 @@ def main(cfg: DictConfig) -> None:
 
         with torch.no_grad():
             Y_test = model(test_X)
-            obj = problem.get_objective_loss(Y_test, test_X).mean().item()
+            obj = problem.get_objective_loss(Y_test, test_X, problem.testOptvals).mean().item()
             ineq = problem.get_ineq_res(test_X, Y_test)
             eq = problem.get_eq_res(test_X, Y_test)
 

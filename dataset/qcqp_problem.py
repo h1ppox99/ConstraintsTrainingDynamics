@@ -226,31 +226,51 @@ class QCQPProblem:
     # Loss functions (used by trainers for each comparison approach)
     # ------------------------------------------------------------------
 
-    def get_objective_loss(self, Y: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
+    def get_objective_loss(
+        self,
+        Y: torch.Tensor,
+        X: torch.Tensor,
+        opt_vals: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
-        Pure objective loss (no constraint term). Shape: (b,).
+        Optimality gap: objective(Y) - optimal_value.  Shape: (b,).
+
+        When *opt_vals* is provided (the per-instance optimal objective values
+        stored in the dataset), the loss equals the optimality gap, which is
+        always >= 0 and equals 0 only when Y is a global optimum.
+
         Used by hard-constraint methods (CVXPy layers, Theseus) where
         feasibility is enforced by the architecture.
         """
-        return self.evaluate(X, Y)
+        obj = self.evaluate(X, Y)
+        if opt_vals is not None:
+            obj = obj - opt_vals
+        return obj
 
     def get_soft_penalty_loss(
         self,
         Y: torch.Tensor,
         X: torch.Tensor,
         penalty_weight: float,
+        opt_vals: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
-        Soft-penalty loss:  objective  +  λ · ||residuals||².
+        Soft-penalty loss:  (objective - opt_val)  +  λ · ||residuals||².
         Shape: (b,).
+
+        When *opt_vals* is provided the objective term becomes the optimality
+        gap (>= 0), so the loss is lower-bounded by zero at the optimum.
 
         Parameters
         ----------
         Y              : predicted solutions, shape (b, n)
         X              : problem parameters,  shape (b, e)
         penalty_weight : λ – trades off feasibility vs. objective quality
+        opt_vals       : per-instance optimal objective values, shape (b,)
         """
         obj = self.evaluate(X, Y)                               # (b,)
+        if opt_vals is not None:
+            obj = obj - opt_vals
         viol = torch.norm(self.get_resid(X, Y), dim=1) ** 2    # (b,)
         return obj + penalty_weight * viol
 
