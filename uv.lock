@@ -251,8 +251,8 @@ name = "constraintstrainingdynamics"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "cvxpylayers", version = "0.1.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "cvxpylayers", version = "1.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "cvxpy", version = "1.7.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "cvxpy", version = "1.8.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "hydra-core" },
     { name = "matplotlib" },
     { name = "theseus-ai" },
@@ -263,7 +263,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cvxpylayers", specifier = ">=0.1.6" },
+    { name = "cvxpy", specifier = ">=1.7.5" },
     { name = "hydra-core", specifier = ">=1.3.0" },
     { name = "matplotlib", specifier = ">=3.4.0" },
     { name = "theseus-ai", specifier = ">=0.2.3" },
@@ -539,46 +539,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e6/51/e967e5893e3448c645fe27493fb02f9b6b1ae60cdadb510a29e06e523c84/cvxpy-1.8.1-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:8d6664df446dc67024b1eed713f91327b642fab7dd59c1737e0b1c0787bdea34", size = 1350756, upload-time = "2026-02-03T22:03:29.333Z" },
     { url = "https://files.pythonhosted.org/packages/5d/f6/99289c05744f9937c40cbe4861378bfa817c0b04d9c4fb49b4452349c409/cvxpy-1.8.1-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:38ba6e8153c86dd8bf950accaf115f83b57a1d7130af81aedab81e112fd24f58", size = 1349609, upload-time = "2026-02-03T22:15:07.636Z" },
     { url = "https://files.pythonhosted.org/packages/aa/c5/6e926c1670e714f5f367e66ca3af2ac63af4d4eedd85f5cb1e26d641653a/cvxpy-1.8.1-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f0097a669e9c3008de565f2d773ef57b5e2548c3ac45aad6f1920bf4a0e3c823", size = 1374942, upload-time = "2026-02-03T22:15:08.754Z" },
-]
-
-[[package]]
-name = "cvxpylayers"
-version = "0.1.9"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version < '3.11' and sys_platform == 'linux'",
-    "python_full_version < '3.11' and sys_platform != 'linux'",
-]
-dependencies = [
-    { name = "cvxpy", version = "1.7.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "diffcp", marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/37/9ce623f5f583fe116d6d784f4a90b64e3d291802bc6f207f8653ae896f5f/cvxpylayers-0.1.9.tar.gz", hash = "sha256:aa72a475b28930b09855acbddce21ef3c1226aa3d86fec3dedc27afe5329f5f8", size = 29696, upload-time = "2024-12-06T01:44:40.127Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fc/01/e2fd0ee99b0d24297fc3c1469b27d36084f72c411778e30ae29786230bc1/cvxpylayers-0.1.9-py3-none-any.whl", hash = "sha256:8b3d547ca1862462c290e4767b12b67beeda2bacc8db7106f7c8aec35f17be59", size = 31689, upload-time = "2024-12-06T01:44:38.163Z" },
-]
-
-[[package]]
-name = "cvxpylayers"
-version = "1.0.3"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.12' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and sys_platform != 'linux'",
-    "python_full_version == '3.11.*' and sys_platform == 'linux'",
-    "python_full_version == '3.11.*' and sys_platform != 'linux'",
-]
-dependencies = [
-    { name = "cvxpy", version = "1.8.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "diffcp", marker = "python_full_version >= '3.11'" },
-    { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/f8/135ae246f1fb05906843bdf3174ed19ed1d220aa9b5cb58a05b2b8a820e8/cvxpylayers-1.0.3.tar.gz", hash = "sha256:ee47eaa310bdc626f3d9e26bc84f5cf754ec30c3a2f5e4131361fbad3d495fb8", size = 5545560, upload-time = "2026-02-27T20:39:46.878Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/46/1d/c0cbccb808f21a7d569afcecffed130a29fab608cf4e14cf135254cc9afb/cvxpylayers-1.0.3-py3-none-any.whl", hash = "sha256:85d2a6f5cad43dcb6d1597be9c1b7551c18bfb4da6fc470bb080eb8b5acbc9e5", size = 60792, upload-time = "2026-02-27T20:39:44.988Z" },
 ]
 
 [[package]]
