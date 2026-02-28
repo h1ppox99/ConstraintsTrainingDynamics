@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader, TensorDataset
 torch.set_default_dtype(torch.float64)
 
 from dataset.qcqp_problem import QCQPProblem
-from models import SoftPenaltyNet, TheseusLayerNet
+from models import SoftPenaltyNet, TheseusLayerNet, CvxpyLayerNet
 from training_dynamics.metrics import MetricsTracker
 
 
@@ -79,6 +79,15 @@ def build_model(name: str, problem: QCQPProblem, cfg: dict) -> nn.Module:
             newton_maxiter=cfg.get("theseus_maxiter", 50),
             **backbone_kwargs,
         )
+    elif name == "cvxpy":
+        return CvxpyLayerNet(
+            problem,
+            backbone_type=backbone_type,
+            solver="SCS",
+            solver_eps=cfg.get("cvxpy_solver_eps", 1e-5),
+            solver_max_iters=cfg.get("cvxpy_solver_max_iters", 10_000),
+            **backbone_kwargs,
+        )
     else:
         raise ValueError(f"Unknown model: {name}")
 
@@ -95,7 +104,7 @@ def compute_loss(
     if model_name == "soft":
         return problem.get_soft_penalty_loss(Y, X, penalty_weight, opt_vals).mean()
     else:
-        # Theseus: feasibility built-in → optimality gap
+        # Theseus / CVXPY: feasibility built-in → optimality gap
         return problem.get_objective_loss(Y, X, opt_vals).mean()
 
 
@@ -267,6 +276,8 @@ def main(cfg: DictConfig) -> None:
         "log_hessian_every": cfg.metrics.log_hessian_every,
         "hessian_k":         cfg.metrics.hessian_k,
         "theseus_maxiter":   cfg.model.theseus_maxiter,
+        "cvxpy_solver_eps":  cfg.model.cvxpy_solver_eps,
+        "cvxpy_solver_max_iters": cfg.model.cvxpy_solver_max_iters,
         "seed":              cfg.seed,
     }
 
@@ -308,6 +319,8 @@ def main(cfg: DictConfig) -> None:
                     run_name += f"_pw{cfg.training.penalty_weight}"
                 elif model_name == "theseus":
                     run_name += f"_mi{cfg.model.theseus_maxiter}"
+                elif model_name == "cvxpy":
+                    run_name += f"_eps{cfg.model.cvxpy_solver_eps}"
 
             wandb.init(
                 project=cfg.wandb.project,

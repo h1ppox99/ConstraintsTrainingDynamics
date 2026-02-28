@@ -10,6 +10,7 @@ defaults:
 models:
   - soft
   - theseus
+  - cvxpy
 
 seed: 42
 

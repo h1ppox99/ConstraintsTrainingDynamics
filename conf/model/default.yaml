@@ -16,3 +16,7 @@ n_tokens: 8
 
 # --- Theseus solver ---
 theseus_maxiter: 30
+
+# --- CVXPY solver ---
+cvxpy_solver_eps: 1e-5
+cvxpy_solver_max_iters: 10000
