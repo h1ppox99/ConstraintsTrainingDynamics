@@ -1,5 +1,6 @@
 # @package _global_.training
 epochs: 150
+cvxpy_epochs: 30  # separate epoch limit for cvxpy (solves are expensive)
 batch_size: 64
 lr: 1e-3
 penalty_weight: 10.0  # λ for soft-penalty loss

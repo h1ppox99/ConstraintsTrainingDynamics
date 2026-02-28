@@ -124,7 +124,7 @@ def train_one_model(
     Train *model* and return a list of per-epoch metric dicts.
     """
     lr = cfg["lr"]
-    epochs = cfg["epochs"]
+    epochs = cfg.get("cvxpy_epochs", 30) if model_name == "cvxpy" else cfg["epochs"]
     batch_size = cfg["batch_size"]
     penalty_weight = cfg["penalty_weight"]
     log_hessian_every = cfg["log_hessian_every"]
