@@ -51,22 +51,33 @@ def make_loader(
 
 def build_model(name: str, problem: QCQPProblem, cfg: dict) -> nn.Module:
     """Instantiate a model by name."""
-    common = dict(
+    backbone_type = cfg.get("backbone_type", "mlp")
+    # Backbone kwargs – includes both MLP and Transformer keys; the factory
+    # filters to the relevant ones.
+    backbone_kwargs = dict(
         hidden_dim=cfg["hidden_dim"],
         n_hidden=cfg["n_hidden"],
         dropout=cfg["dropout"],
         use_batchnorm=cfg["use_batchnorm"],
+        d_model=cfg.get("d_model", 64),
+        n_heads=cfg.get("n_heads", 4),
+        n_layers=cfg.get("n_layers", 3),
+        dim_feedforward=cfg.get("dim_feedforward", 128),
+        n_tokens=cfg.get("n_tokens", 8),
     )
     if name == "soft":
         return SoftPenaltyNet(
             input_dim=problem.neq,
             output_dim=problem.ydim,
-            **common,
+            backbone_type=backbone_type,
+            **backbone_kwargs,
         )
     elif name == "theseus":
         return TheseusLayerNet(
-            problem, **common,
+            problem,
+            backbone_type=backbone_type,
             newton_maxiter=cfg.get("theseus_maxiter", 50),
+            **backbone_kwargs,
         )
     else:
         raise ValueError(f"Unknown model: {name}")

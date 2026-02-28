@@ -14,45 +14,39 @@ trainer / loss function in QCQPProblem.get_soft_penalty_loss().
 import torch
 import torch.nn as nn
 
-from .backbone import MLPBackbone
-
 torch.set_default_dtype(torch.float64)
+
+from .backbone_factory import build_backbone
 
 
 class SoftPenaltyNet(nn.Module):
     """
-    Plain MLP that predicts y directly from x.
+    Backbone that predicts y directly from x.
 
     No feasibility guarantee — training relies on the soft-penalty loss to
     drive constraint violations toward zero.
 
     Parameters
     ----------
-    input_dim   : dimension of x  (= number of equality constraints e)
-    output_dim  : dimension of y  (= number of decision variables n)
-    hidden_dim  : MLP hidden-layer width
-    n_hidden    : number of hidden layers
-    dropout     : dropout probability
-    use_batchnorm : whether to use BatchNorm1d
+    input_dim     : dimension of x  (= number of equality constraints e)
+    output_dim    : dimension of y  (= number of decision variables n)
+    backbone_type : 'mlp' or 'transformer'
+    **backbone_kwargs : extra arguments forwarded to the backbone constructor
     """
 
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
-        hidden_dim: int = 200,
-        n_hidden: int = 2,
-        dropout: float = 0.2,
-        use_batchnorm: bool = True,
+        backbone_type: str = "mlp",
+        **backbone_kwargs,
     ):
         super().__init__()
-        self.backbone = MLPBackbone(
+        self.backbone = build_backbone(
+            backbone_type,
             input_dim=input_dim,
             output_dim=output_dim,
-            hidden_dim=hidden_dim,
-            n_hidden=n_hidden,
-            dropout=dropout,
-            use_batchnorm=use_batchnorm,
+            **backbone_kwargs,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
