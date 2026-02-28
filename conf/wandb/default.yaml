@@ -1,4 +1,6 @@
 # @package _global_.wandb
 project: ConstraintsTrainingDynamics
-run_name: null      # if null, auto-generated as ep{epochs}_lr{lr}_h{dim}x{layers}_pw{penalty}
+run_name: null      # if null, auto-generated as lr{lr}_ep{epochs}_bs{bs}_{arch}[_pw{pw}|_mi{mi}]
+                   # arch = h{dim}x{layers} (mlp) or dm{d_model}x{n_layers} (transformer)
+                   # _pw appended for soft runs, _mi for theseus runs
 enabled: true

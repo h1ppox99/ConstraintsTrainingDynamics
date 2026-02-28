@@ -275,19 +275,6 @@ def main(cfg: DictConfig) -> None:
         json.dump(train_cfg, f, indent=2)
 
     # --- Train each model ---
-    if cfg.wandb.run_name:
-        experiment_name = cfg.wandb.run_name
-    else:
-        # Build a human-readable name from the key hyperparameters so that
-        # W&B runs are immediately identifiable without opening each one.
-        # Format: ep{epochs}_lr{lr}_h{hidden_dim}x{n_hidden}_pw{penalty_weight}
-        lr_str = f"{cfg.training.lr:.0e}".replace("e-0", "e-").replace("e+0", "e")
-        experiment_name = (
-            f"ep{cfg.training.epochs}"
-            f"_lr{lr_str}"
-            f"_h{cfg.model.hidden_dim}x{cfg.model.n_hidden}"
-            f"_pw{cfg.training.penalty_weight}"
-        )
     all_histories: dict[str, list[dict]] = {}
 
     for model_name in cfg.models:
@@ -300,16 +287,39 @@ def main(cfg: DictConfig) -> None:
         if cfg.wandb.enabled:
             if wandb.run is not None:
                 wandb.finish()
+
+            # Build run name: method-agnostic base + method-specific suffix
+            if cfg.wandb.run_name:
+                run_name = cfg.wandb.run_name
+            else:
+                lr_str = f"{cfg.training.lr:.0e}".replace("e-0", "e-").replace("e+0", "e")
+                backbone_type = cfg.model.backbone_type
+                if backbone_type == "transformer":
+                    arch_str = f"dm{cfg.model.d_model}x{cfg.model.n_layers}"
+                else:
+                    arch_str = f"h{cfg.model.hidden_dim}x{cfg.model.n_hidden}"
+                run_name = (
+                    f"lr{lr_str}"
+                    f"_ep{cfg.training.epochs}"
+                    f"_bs{cfg.training.batch_size}"
+                    f"_{arch_str}"
+                )
+                if model_name == "soft":
+                    run_name += f"_pw{cfg.training.penalty_weight}"
+                elif model_name == "theseus":
+                    run_name += f"_mi{cfg.model.theseus_maxiter}"
+
             wandb.init(
                 project=cfg.wandb.project,
-                name=f"{experiment_name}_{model_name}",
-                group=experiment_name,
+                name=run_name,
+                # Folder hierarchy: method / backbone  (e.g. "soft/mlp")
+                group=f"{model_name}/{cfg.model.backbone_type}",
                 tags=[
                     model_name,
+                    cfg.model.backbone_type,
                     f"ep{cfg.training.epochs}",
                     f"lr{cfg.training.lr}",
-                    f"h{cfg.model.hidden_dim}x{cfg.model.n_hidden}",
-                    f"pw{cfg.training.penalty_weight}",
+                    f"bs{cfg.training.batch_size}",
                 ],
                 config={**train_cfg, "model_name": model_name},
                 dir=str(out_dir),
