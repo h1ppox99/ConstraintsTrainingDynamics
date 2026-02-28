@@ -32,6 +32,7 @@ torch.set_default_dtype(torch.float64)
 from dataset.qcqp_problem import QCQPProblem
 from models import SoftPenaltyNet, TheseusLayerNet, CvxpyLayerNet
 from training_dynamics.metrics import MetricsTracker
+from training_dynamics.landscape import generate_landscape, LandscapeConfig
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,7 @@ def train_one_model(
     cfg: dict,
     results_dir: Path,
     use_wandb: bool = False,
+    landscape_cfg: LandscapeConfig | None = None,
 ) -> list[dict]:
     """
     Train *model* and return a list of per-epoch metric dicts.
@@ -134,7 +136,7 @@ def train_one_model(
 
     tracker = MetricsTracker(
         problem,
-        log_hessian_every=log_hessian_every,
+        log_hessian_every=1,   # cadence is controlled per-epoch below
         hessian_k=cfg.get("hessian_k", 3),
         log_layer_snr=False,
     )
@@ -169,6 +171,17 @@ def train_one_model(
             is_last_batch = (n_batches == len(train_loader) - 1)
 
             if is_last_batch:
+                # Hessian via double-backprop is only safe for soft-penalty:
+                # the Theseus/CVXPY solvers use unrolled Newton iterations
+                # whose second differentiation creates unstable intermediate
+                # graphs that corrupt the gradient already in .grad buffers.
+                hessian_safe = (model_name == "soft")
+                want_hessian = (
+                    hessian_safe
+                    and log_hessian_every > 0
+                    and epoch % log_hessian_every == 0
+                )
+
                 def loss_fn():
                     return compute_loss(
                         model_name, problem, model(X_batch), X_batch, penalty_weight, optval_batch,
@@ -181,7 +194,7 @@ def train_one_model(
                     Y=Y_pred,
                     loss=loss,
                     step=global_step,
-                    loss_fn=loss_fn,
+                    loss_fn=loss_fn if want_hessian else None,
                     penalty_weight=penalty_weight,
                 )
 
@@ -233,11 +246,67 @@ def train_one_model(
                 f"snr={record.get('grad_snr_global', 0):.4f}"
             )
 
+        # --- Landscape snapshot ---
+        if landscape_cfg is not None and landscape_cfg.enabled:
+            every = landscape_cfg.every_n_epochs
+            if every > 0 and epoch % every == 0:
+                _run_landscape(model, model_name, problem, cfg,
+                               train_loader, epoch, results_dir, landscape_cfg, cfg.get("seed"))
+
     # Save model checkpoint
     ckpt_path = results_dir / f"{model_name}_checkpoint.pt"
     torch.save(model.state_dict(), ckpt_path)
 
+    # --- Final landscape (if enabled and not already done this epoch) ---
+    if landscape_cfg is not None and landscape_cfg.enabled:
+        every = landscape_cfg.every_n_epochs
+        already_done = every > 0 and epochs % every == 0
+        if not already_done:
+            _run_landscape(model, model_name, problem, cfg,
+                           train_loader, epochs, results_dir, landscape_cfg, cfg.get("seed"))
+
     return history
+
+
+# ---------------------------------------------------------------------------
+# Landscape helper
+# ---------------------------------------------------------------------------
+
+def _run_landscape(
+    model: nn.Module,
+    model_name: str,
+    problem: QCQPProblem,
+    cfg: dict,
+    train_loader,
+    epoch: int,
+    results_dir: Path,
+    lc: LandscapeConfig,
+    seed: int | None,
+) -> None:
+    """Evaluate the loss landscape and save 2-D / 3-D plots."""
+    penalty_weight = cfg["penalty_weight"]
+
+    # Build a loss function that evaluates on the full training set
+    # for a stable landscape; falls back to first batch if dataset is large.
+    all_X = torch.cat([xb for xb, _ in train_loader], dim=0)
+    all_optvals = torch.cat([ov for _, ov in train_loader], dim=0)
+
+    def landscape_loss_fn():
+        Y = model(all_X)
+        return compute_loss(model_name, problem, Y, all_X, penalty_weight, all_optvals)
+
+    try:
+        generate_landscape(
+            model=model,
+            loss_fn=landscape_loss_fn,
+            model_name=model_name,
+            epoch=epoch,
+            out_dir=results_dir,
+            lc=lc,
+            seed=seed,
+        )
+    except Exception as e:
+        print(f"  [{model_name}] Landscape generation failed at epoch {epoch}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +353,16 @@ def main(cfg: DictConfig) -> None:
     # Save resolved config as JSON (for plot_comparison.py and post-hoc inspection)
     with open(out_dir / "config.json", "w") as f:
         json.dump(train_cfg, f, indent=2)
+
+    # --- Landscape configuration ---
+    lc = LandscapeConfig(
+        enabled=cfg.landscape.enabled,
+        every_n_epochs=cfg.landscape.every_n_epochs,
+        grid_size=cfg.landscape.grid_size,
+        coord_range=cfg.landscape.coord_range,
+        norm=cfg.landscape.norm,
+        ignore=cfg.landscape.ignore,
+    )
 
     # --- Train each model ---
     all_histories: dict[str, list[dict]] = {}
@@ -343,6 +422,7 @@ def main(cfg: DictConfig) -> None:
             history = train_one_model(
                 model_name, model, problem, train_cfg, out_dir,
                 use_wandb=cfg.wandb.enabled,
+                landscape_cfg=lc,
             )
             elapsed = time.time() - t0
             print(f"\n  [{model_name}] Done in {elapsed:.1f}s")

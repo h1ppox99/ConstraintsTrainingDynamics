@@ -3,6 +3,7 @@ defaults:
   - training: default
   - model: default
   - metrics: default
+  - landscape: default
   - wandb: default
   - _self_
 

@@ -1,0 +1,10 @@
+# @package _global_.landscape
+enabled: true
+every_n_epochs: 50     # generate landscape every N epochs (0 = only at final epoch)
+grid_size: 21          # points per axis  → grid_size²  forward passes per snapshot
+coord_range: 0.3       # α, β ∈ [-coord_range, +coord_range]
+                       # keep small (0.1–0.5) to stay local; large values → exponential loss growth
+norm: filter           # filter-wise normalization (matches Li et al. 2018)
+ignore: biasbn         # zero-out 1-D params (bias, BN γ/β) in the random directions
+log_scale: true        # plot log(1+Z) — compresses exponential edge growth, reveals local curvature
+clip_percentile: 95.0  # cap colorscale at this percentile (set to 0 to disable)
