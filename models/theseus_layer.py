@@ -31,6 +31,7 @@ import theseus as th
 from theseus.core import CostFunction, Objective, Variable
 
 from .backbone import MLPBackbone
+from .backbone_factory import build_backbone
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +40,13 @@ from .backbone import MLPBackbone
 
 class _FuncHolder:
     """Mutable container for constraint functions that change per forward pass."""
-    __slots__ = ("g_func", "J_func")
+    __slots__ = ("g_func", "J_func", "bl_orig", "bu_orig")
 
     def __init__(self):
         self.g_func = None
         self.J_func = None
+        self.bl_orig = None
+        self.bu_orig = None
 
 
 class _ConstraintViolationCost(CostFunction):
@@ -117,38 +120,34 @@ class _ConstraintViolationCost(CostFunction):
 
 class TheseusLayerNet(nn.Module):
     """
-    MLP + Theseus nonlinear-least-squares projection for hard QCQP constraints.
+    Backbone + Theseus nonlinear-least-squares projection for hard QCQP constraints.
 
     Parameters
     ----------
     problem          : QCQPProblem instance – supplies constraint functions and
                        bounds via get_g(), get_jacobian(), get_lower_bound(),
                        get_upper_bound().
-    hidden_dim       : MLP hidden-layer width
-    n_hidden         : number of hidden layers
-    dropout          : dropout probability
-    use_batchnorm    : whether to use BatchNorm1d
+    backbone_type    : 'mlp' or 'transformer'
     newton_maxiter   : max inner-solver iterations        (default 50)
     rtol             : convergence tolerance               (default 1e-5)
     lambd            : LM damping / Tikhonov parameter     (default 1e-4)
     backward_mode    : 'unroll' | 'implicit' | 'truncated' | 'dlm'
     optimizer_type   : 'levenberg_marquardt' | 'gauss_newton'
     trust_region     : clip final delta to [-1, 1]         (default False)
+    **backbone_kwargs : extra arguments forwarded to the backbone constructor
     """
 
     def __init__(
         self,
         problem,
-        hidden_dim: int = 200,
-        n_hidden: int = 2,
-        dropout: float = 0.2,
-        use_batchnorm: bool = True,
+        backbone_type: str = "mlp",
         newton_maxiter: int = 50,
         rtol: float = 1e-5,
         lambd: float = 1e-4,
         backward_mode: str = "unroll",
         optimizer_type: str = "levenberg_marquardt",
         trust_region: bool = False,
+        **backbone_kwargs,
     ):
         super().__init__()
 
@@ -168,14 +167,12 @@ class TheseusLayerNet(nn.Module):
         # Relaxation epsilon – can be set externally for adaptive relaxation
         self._eps = torch.zeros(m + e)
 
-        # ---- Backbone MLP: x (dim e) → y₀ (dim n) ----
-        self.backbone = MLPBackbone(
+        # ---- Backbone: x (dim e) → y₀ (dim n) ----
+        self.backbone = build_backbone(
+            backbone_type,
             input_dim=e,
             output_dim=n,
-            hidden_dim=hidden_dim,
-            n_hidden=n_hidden,
-            dropout=dropout,
-            use_batchnorm=use_batchnorm,
+            **backbone_kwargs,
         )
 
         # ---- Theseus infrastructure (built lazily on first forward) ----
@@ -250,6 +247,7 @@ class TheseusLayerNet(nn.Module):
         self.__dict__["_theseus_layer"]     = layer
         self.__dict__["_theseus_objective"] = objective
         self.__dict__["_theseus_optimizer"] = optimizer
+        self.__dict__["_theseus_cost"]      = cost
         self.__dict__["_opt_kwargs"]        = opt_kwargs
         self.__dict__["_theseus_built"]     = True
 
@@ -278,6 +276,42 @@ class TheseusLayerNet(nn.Module):
         return mode_map[mode]
 
     # ------------------------------------------------------------------
+    # SnareNet end_iter_callback
+    # ------------------------------------------------------------------
+
+    def _make_snare_callback(self, cost: "_ConstraintViolationCost"):
+        """Create an end_iter_callback that implements the SnareNet z^k update rule.
+
+        At each LM iteration k, re-computes the box projection:
+            z^k = clamp(g(y^k), bl_orig, bu_orig)
+        then updates the cost target so the residual becomes:
+            error(y) = g(y) - z^k
+        This is achieved by setting bl_var = bu_var = z^k and eps_var = 0, because:
+            -(ReLU(z^k - g(y)) - ReLU(g(y) - z^k)) = g(y) - z^k
+        which exactly matches the SnareNet residual (see CONTEXT.md Appendix A.3).
+        """
+        def snare_callback(optimizer, info, delta, it):
+            with torch.no_grad():
+                # Retrieve current iterate y^k from the optimisation variable
+                y_k = cost.y_var.tensor
+
+                # Evaluate constraint function at y^k: g(y^k), shape (b, nc)
+                g_y_k = self._func_holder.g_func(y_k)
+
+                # Box-project g(y^k) onto [bl_orig, bu_orig] to get the new target
+                bl_orig = self._func_holder.bl_orig
+                bu_orig = self._func_holder.bu_orig
+                z_k = torch.clamp(g_y_k, min=bl_orig, max=bu_orig)
+
+                # Update cost: bl = bu = z^k, eps = 0
+                # → error(y) = -(ReLU(z^k - g(y)) - ReLU(g(y) - z^k)) = g(y) - z^k
+                cost.bl_var.update(z_k)
+                cost.bu_var.update(z_k)
+                cost.eps_var.update(torch.zeros_like(z_k))
+
+        return snare_callback
+
+    # ------------------------------------------------------------------
     # Projection
     # ------------------------------------------------------------------
 
@@ -290,6 +324,9 @@ class TheseusLayerNet(nn.Module):
 
         self._func_holder.g_func = g_func
         self._func_holder.J_func = J_func
+        # Store original bounds for the SnareNet callback to project against
+        self._func_holder.bl_orig = bl
+        self._func_holder.bu_orig = bu
 
         if not self.__dict__["_theseus_built"]:
             self._build_theseus(y0.device, y0.dtype)
@@ -301,6 +338,10 @@ class TheseusLayerNet(nn.Module):
 
         input_tensors = {"y": y0, "bl": bl, "bu": bu, "eps": eps_tensor}
         opt_kwargs = {"backward_mode": backward_mode, **self.__dict__["_opt_kwargs"]}
+
+        # Inject the SnareNet end_iter_callback to update z^k at every inner iteration
+        cost = self.__dict__["_theseus_cost"]
+        opt_kwargs["end_iter_callback"] = self._make_snare_callback(cost)
 
         result, _ = self.__dict__["_theseus_layer"].forward(
             input_tensors=input_tensors, optimizer_kwargs=opt_kwargs,
