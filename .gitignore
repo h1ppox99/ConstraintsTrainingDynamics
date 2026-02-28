@@ -23,7 +23,5 @@ Thumbs.db
 .env
 
 # Generated data and results
-dataset/data/
 results/
 multirun/
-*.pkl
