@@ -1,7 +1,6 @@
 ## Training CLI reference
 
-Configuration is managed by [Hydra](https://hydra.cc/).  Every parameter below
-can be overridden directly on the command line as `key=value`.
+Configuration is managed by [Hydra](https://hydra.cc/).  
 
 ```bash
 # Default run
